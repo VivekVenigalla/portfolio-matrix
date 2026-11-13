@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Target-Driven Portfolio Matrix</title>
+<meta name="description" content="Interactive prototype of a proof-of-work skill graph: name a target, explore the dependency graph, and verify quests to unlock the next nodes.">
+<meta name="theme-color" content="#0A0A0A">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230A0A0A'/%3E%3Cpath d='M8 1.5l5.6 3.25v6.5L8 14.5l-5.6-3.25v-6.5z' fill='none' stroke='%2322E5FF' stroke-width='1.4'/%3E%3Ccircle cx='8' cy='8' r='2' fill='%2322E5FF'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600&display=swap">
+<style>
+html { background: #0A0A0A; }
+body { margin: 0; }
+:root { padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); }
+[hidden] { display: none !important; }
+.offline { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: #8793A0; font: 15px/1.5 system-ui, sans-serif; }
+/* Layout: one-screen app. A full-bleed canvas is the stage (the DAG lives there);
+   every other surface is a glass panel floating over it: top bar, node index rail,
+   status bar, quest panel, and the target terminal that opens the session. */
+:root {
+  color-scheme: dark;
+  --void: #0A0A0A;
+  --ink: #E7EEF4;
+  --muted: #8793A0;
+  --faint: #5B6672;
+  --slate: #3A424C;
+  --cyan: #22E5FF;
+  --green: #8CFF3F;
+  --gold: #FFC83D;
+  --red: #FF6B78;
+  --glass: rgba(15, 19, 23, .62);
+  --glass-hi: rgba(255, 255, 255, .04);
+  --line: rgba(190, 220, 255, .10);
+  --line-2: rgba(190, 220, 255, .2);
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --sans: 'Outfit', 'Avenir Next', 'Segoe UI', system-ui, sans-serif;
+  --gl: max(16px, env(safe-area-inset-left, 0px));
+  --gr: max(16px, env(safe-area-inset-right, 0px));
+  --ease: cubic-bezier(.2, .85, .2, 1);
+}
+html, body { height: 100%; }
+body { background: var(--void); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.5; overflow: hidden; -webkit-font-smoothing: antialiased; }
+#root { position: relative; height: 100%; overflow: hidden; overflow: clip; }
+* { box-sizing: border-box; }
+button, input { font: inherit; color: inherit; }
+h1, h2, h3, p, ul { margin: 0; padding: 0; }
+ul { list-style: none; }
+
+.stage { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+
+.glass {
+  background: linear-gradient(180deg, var(--glass-hi), transparent 40%), var(--glass);
+  -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 24px 60px rgba(0, 0, 0, .55);
+}
+.mono { font-family: var(--mono); }
+.eyebrow { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 0 12px; height: 32px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  background: rgba(255, 255, 255, .04); border: 1px solid var(--line-2); color: var(--ink);
+  transition: border-color .15s, background .15s, color .15s, box-shadow .15s;
+}
+.btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.btn:focus-visible, .row:focus-visible, .chip:focus-visible, .field input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.btn:disabled { opacity: .45; cursor: default; border-color: var(--line-2); color: var(--ink); }
+.btn.primary { background: var(--cyan); border-color: var(--cyan); color: #00161B; font-weight: 700; box-shadow: 0 0 24px rgba(34, 229, 255, .28); }
+.btn.primary:hover { color: #00161B; box-shadow: 0 0 34px rgba(34, 229, 255, .5); }
+.btn.icon { width: 32px; padding: 0; }
+.btn.tall { height: 40px; }
+
+/* ---------- HUD (hidden until the matrix is compiled) ---------- */
+.hud { transition: opacity .6s var(--ease), transform .6s var(--ease); }
+[data-phase="input"] .hud, [data-phase="generating"] .hud { opacity: 0; pointer-events: none; }
+[data-phase="input"] .topbar, [data-phase="generating"] .topbar { transform: translateY(-12px); }
+[data-phase="input"] .statusbar, [data-phase="generating"] .statusbar { transform: translateY(12px); }
+[data-phase="input"] .rail, [data-phase="generating"] .rail { transform: translateX(-12px); }
+
+.topbar { position: absolute; top: 12px; left: var(--gl); right: var(--gr); height: 46px; display: flex; align-items: center; gap: 14px; padding: 0 8px 0 14px; z-index: 3; }
+.brand { display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-weight: 700; font-size: 12px; letter-spacing: .2em; }
+.brand svg { color: var(--cyan); filter: drop-shadow(0 0 6px rgba(34, 229, 255, .7)); }
+.sep { width: 1px; height: 18px; background: var(--line-2); flex: none; }
+.target { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 10px; }
+.target b { font-family: var(--mono); font-weight: 500; font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.progress { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.segs { display: flex; gap: 3px; }
+.segs i { width: 14px; height: 6px; border-radius: 1px; background: var(--slate); transition: background .5s, box-shadow .5s; }
+.segs i[data-s="active"] { background: var(--cyan); box-shadow: 0 0 8px rgba(34, 229, 255, .7); }
+.segs i[data-s="verified"] { background: var(--green); box-shadow: 0 0 8px rgba(140, 255, 63, .55); }
+.segs i[data-s="verified"][data-boss="true"] { background: var(--gold); box-shadow: 0 0 8px rgba(255, 200, 61, .6); }
+.progress em { font-style: normal; color: var(--ink); }
+
+.rail { position: absolute; top: 70px; left: var(--gl); width: 236px; z-index: 2; padding: 12px 6px 6px; display: none; }
+.rail .eyebrow { padding: 0 8px 8px; display: flex; justify-content: space-between; }
+.row { width: 100%; display: grid; grid-template-columns: 10px 30px 1fr auto; align-items: center; gap: 8px; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; cursor: pointer; text-align: left; transition: background .12s, opacity .15s; }
+.row:hover, .row[data-hot="true"] { background: rgba(255, 255, 255, .06); }
+.row[data-sel="true"] { background: rgba(34, 229, 255, .09); box-shadow: inset 2px 0 0 var(--cyan); }
+.row[data-dim="true"] { opacity: .35; }
+.row .code { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.row .name { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.row .tier { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.row[data-s="locked"] .name { color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--slate); flex: none; }
+.dot[data-s="active"] { border-color: var(--cyan); background: var(--cyan); box-shadow: 0 0 10px var(--cyan); animation: breathe 1.8s ease-in-out infinite; }
+.dot[data-s="verified"] { border-color: var(--green); background: var(--green); box-shadow: 0 0 8px rgba(140, 255, 63, .6); }
+.dot[data-s="verified"][data-boss="true"] { border-color: var(--gold); background: var(--gold); box-shadow: 0 0 8px rgba(255, 200, 61, .6); }
+@keyframes breathe { 50% { box-shadow: 0 0 3px var(--cyan); opacity: .7; } }
+
+.statusbar { position: absolute; bottom: 12px; left: var(--gl); right: var(--gr); height: 46px; display: flex; align-items: center; gap: 16px; padding: 0 8px 0 14px; z-index: 3; }
+.legend { display: flex; gap: 14px; font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.readout { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+.readout b { color: var(--ink); font-weight: 500; }
+.readout .up { color: #fff; } .readout .down { color: var(--cyan); }
+.readout .phone { display: none; }
+.tools { display: flex; gap: 6px; }
+
+/* ---------- Target terminal (state 0) ---------- */
+.termwrap { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px var(--gr) 16px var(--gl); z-index: 5; transition: opacity .5s var(--ease), transform .5s var(--ease), visibility 0s; }
+[data-phase="matrix"] .termwrap { opacity: 0; transform: scale(.96); pointer-events: none; visibility: hidden; transition: opacity .5s var(--ease), transform .5s var(--ease), visibility 0s .5s; }
+.term { width: min(660px, 100%); padding: 0; overflow: hidden; }
+.term-head { display: flex; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.term-body { padding: 26px 22px 22px; display: flex; flex-direction: column; gap: 20px; }
+.term h1 { font-weight: 300; font-size: clamp(24px, 4.6vw, 34px); line-height: 1.15; letter-spacing: -.01em; text-wrap: balance; }
+.term h1 span { color: var(--cyan); }
+.term .lede { color: var(--muted); max-width: 52ch; }
+.field { display: flex; align-items: center; gap: 12px; padding: 0 14px; height: 52px; border: 1px solid var(--line-2); border-radius: 8px; background: rgba(0, 0, 0, .45); transition: border-color .15s, box-shadow .15s; }
+.field:focus-within { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(34, 229, 255, .12), 0 0 30px rgba(34, 229, 255, .12); }
+.field .prompt { font-family: var(--mono); color: var(--cyan); font-weight: 700; }
+.field input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; font-family: var(--mono); font-size: 14px; caret-color: var(--cyan); }
+.field input:focus-visible { outline: 0; }
+.field input::placeholder { color: var(--faint); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.chip { font-family: var(--mono); font-size: 11px; padding: 5px 9px; border-radius: 5px; border: 1px solid var(--line); background: rgba(255, 255, 255, .03); color: var(--muted); cursor: pointer; transition: color .15s, border-color .15s; }
+button.chip:hover { color: var(--cyan); border-color: var(--cyan); }
+.chip[data-s="active"] { color: var(--cyan); border-color: rgba(34, 229, 255, .4); }
+.chip[data-s="verified"] { color: var(--green); border-color: rgba(140, 255, 63, .35); }
+.chip[data-s="verified"][data-boss="true"] { color: var(--gold); border-color: rgba(255, 200, 61, .4); }
+.term-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.note { font-size: 12.5px; color: var(--faint); max-width: 44ch; }
+.err { font-family: var(--mono); font-size: 11.5px; color: var(--red); }
+.log { font-family: var(--mono); font-size: 12.5px; display: flex; flex-direction: column; gap: 9px; min-height: 150px; }
+.log div { display: grid; grid-template-columns: 16px 76px 1fr; gap: 8px; animation: rise .25s var(--ease) both; }
+.log .ok { color: var(--green); } .log .k { color: var(--faint); } .log .v { color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+.log .run { color: var(--cyan); animation: blink .7s steps(2) infinite; }
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+@keyframes blink { 50% { opacity: .2; } }
+
+/* ---------- Quest panel (states 2 and 3) ---------- */
+.panel { position: absolute; top: 70px; bottom: 70px; right: var(--gr); width: min(424px, calc(100% - var(--gl) - var(--gr))); z-index: 4; display: flex; flex-direction: column; overflow: hidden; transform: translateX(calc(100% + 40px)); opacity: 0; visibility: hidden; transition: transform .5s var(--ease), opacity .3s, visibility 0s .5s; }
+.panel[data-open="true"] { transform: none; opacity: 1; visibility: visible; transition: transform .5s var(--ease), opacity .3s, visibility 0s; }
+.panel::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; background: var(--slate); transition: background .5s, box-shadow .5s; }
+.panel[data-status="active"]::before { background: var(--cyan); box-shadow: 0 0 18px var(--cyan); }
+.panel[data-status="verified"]::before { background: var(--green); box-shadow: 0 0 18px var(--green); }
+.panel[data-status="verified"][data-boss="true"]::before { background: var(--gold); box-shadow: 0 0 18px var(--gold); }
+.qp-head { padding: 18px 18px 14px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line); }
+.qp-top { display: flex; align-items: center; gap: 10px; }
+.qp-top .code { font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: .08em; flex: 1; }
+.pill { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--slate); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.pill[data-s="active"] { border-color: rgba(34, 229, 255, .5); color: var(--cyan); background: rgba(34, 229, 255, .08); }
+.pill[data-s="verified"] { border-color: rgba(140, 255, 63, .5); color: var(--green); background: rgba(140, 255, 63, .08); }
+.pill[data-s="verified"][data-boss="true"] { border-color: rgba(255, 200, 61, .5); color: var(--gold); background: rgba(255, 200, 61, .08); }
+.qp-head h2 { font-weight: 500; font-size: 22px; line-height: 1.2; text-wrap: balance; }
+.qp-head p { color: var(--muted); font-size: 14px; }
+.qp-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 20px; }
+.qp-body > * { flex: none; }
+.quest { display: flex; flex-direction: column; gap: 10px; }
+.quest h3 { font-weight: 500; font-size: 18px; line-height: 1.25; text-wrap: balance; }
+.quest p { color: #C5CFD8; max-width: 60ch; }
+.boss-tag { color: var(--gold); }
+.meta { display: grid; grid-template-columns: auto auto 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.meta div { background: rgba(10, 12, 14, .7); padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.meta b { font-family: var(--mono); font-weight: 500; font-size: 13px; font-variant-numeric: tabular-nums; }
+.meta .art { font-family: var(--sans); font-size: 13px; font-weight: 400; }
+.accept { display: flex; flex-direction: column; gap: 9px; margin-top: 8px; }
+.accept li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; font-size: 14px; color: #C5CFD8; }
+.box { width: 16px; height: 16px; margin-top: 3px; border: 1px solid var(--line-2); border-radius: 3px; display: grid; place-items: center; color: transparent; transition: all .2s; }
+.accept li[data-ok="true"] .box { border-color: var(--green); background: rgba(140, 255, 63, .14); color: var(--green); }
+.lineage { display: grid; grid-template-columns: auto 1fr; gap: 10px 12px; align-items: center; }
+.redact { filter: blur(6px); opacity: .55; user-select: none; pointer-events: none; }
+.qp-foot { border-top: 1px solid var(--line); padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; background: rgba(0, 0, 0, .28); }
+.qp-foot .field { height: 44px; }
+.qp-foot .field input { font-size: 12.5px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.actions .btn { flex: 1; }
+.vlog { font-family: var(--mono); font-size: 12px; display: flex; flex-direction: column; gap: 7px; }
+.vlog div { display: grid; grid-template-columns: 16px 52px 1fr; gap: 8px; animation: rise .2s var(--ease) both; }
+.vlog .k { color: var(--faint); } .vlog .v { overflow-wrap: anywhere; min-width: 0; }
+.proof { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-family: var(--mono); font-size: 12px; }
+.proof dt { color: var(--faint); } .proof dd { margin: 0; overflow-wrap: anywhere; min-width: 0; }
+.lockmsg { display: flex; gap: 10px; align-items: flex-start; color: var(--muted); font-size: 14px; }
+.lockmsg svg { flex: none; margin-top: 3px; }
+
+@media (min-width: 1280px) { .rail { display: block; } }
+@media (max-width: 719px) {
+  .progress .segs, .progress .xp, .progress .word, .wordmark, .target .eyebrow, .btn .label, .legend, .readout .desk { display: none; }
+  .readout { text-align: left; font-size: 10px; }
+  .readout .phone { display: inline; }
+  .btn.haslabel { width: 32px; padding: 0; }
+  .panel { top: auto; left: var(--gl); right: var(--gr); bottom: 0; width: auto; height: 74%; border-bottom-left-radius: 0; border-bottom-right-radius: 0; transform: translateY(105%); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .term-body { padding: 20px 16px 18px; }
+}
+.legend em { font-style: normal; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before { animation: none !important; transition-duration: .01s !important; }
+}
+</style>
+</head>
+<body>
+<noscript><p style="padding:24px;color:#8793A0;font:15px system-ui">This prototype needs JavaScript turned on.</p></noscript>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script>
+(function () {
+'use strict';
+if (!window.React || !window.ReactDOM) {
+  document.getElementById('root').innerHTML = '<p class="offline">This page could not load its interface library. Check your internet connection and reload.</p>';
+  return;
+}
+const { useState, useEffect, useRef, useReducer, useCallback } = React;
+const h = React.createElement;
+const RM = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+/* =====================================================================
+   1. GRAPH DATA  — the only thing a backend would need to return.
+   Nodes carry their prerequisites; everything else (depth, ancestors,
+   descendants, status) is derived.
+   ===================================================================== */
+const RAW = [
+  { id: 'N01', slug: 'strview', short: 'Core C++', title: 'C++ Fundamentals', lane: -0.1, deps: [], hours: 4, xp: 120,
+    skill: 'Values, references, const-correctness and object lifetimes.',
+    quest: { name: 'Ship a zero-allocation string view',
+      brief: 'Write strview, a non-owning view over character data with find, substr, starts_with and the comparison operators. It must never touch the heap, and you must be able to say exactly when it dangles.',
+      artifact: 'Public repo with tests',
+      accept: ['Builds with -Wall -Wextra -Werror on GCC and Clang', '25 or more unit tests pass in CI', 'A counting operator new proves zero heap allocations', 'README shows one lifetime bug the type cannot prevent'] } },
+  { id: 'N02', slug: 'intrusive-list', short: 'Pointers', title: 'Pointers & Manual Memory', lane: -0.7, deps: ['N01'], hours: 6, xp: 180,
+    skill: 'Raw pointers, ownership by convention, and the tools that catch you.',
+    quest: { name: 'Build an intrusive list that never leaks',
+      brief: 'Implement an intrusive doubly linked list with raw pointers only. Nodes embed their own links, so the list allocates nothing. Then try to break it with a fuzzer before a reviewer does.',
+      artifact: 'Public repo with fuzz log',
+      accept: ['insert, erase and splice are O(1)', 'A 1M-operation fuzz run is clean under AddressSanitizer', 'No allocation per node: links live inside the element', 'README diagrams pointer state before and after a splice'] } },
+  { id: 'N03', slug: 'unique-buf', short: 'RAII & Moves', title: 'RAII & Move Semantics', lane: 0.4, deps: ['N01'], hours: 5, xp: 160,
+    skill: 'Resource lifetimes tied to scope, and transfers that cost nothing.',
+    quest: { name: 'Write unique_buf<T> with the rule of five',
+      brief: 'Build an owning, move-only buffer. A moved-from buffer is empty and safe to destroy, and resize keeps the strong exception guarantee even when T throws while copying.',
+      artifact: 'Public repo with Compiler Explorer link',
+      accept: ['Copy is deleted and move is noexcept, checked by static_assert', 'Self move-assignment is safe', 'A throwing test type proves resize never leaks', 'Linked codegen comparison of move against copy'] } },
+  { id: 'N04', slug: 'layout-dump', short: 'Object Layout', title: 'Object Layout & Alignment', lane: -0.15, deps: ['N02'], hours: 5, xp: 200,
+    skill: 'How structs occupy bytes: size, alignment, padding, cache lines.',
+    quest: { name: 'Play padding detective on ten structs',
+      brief: 'Build layout_dump, a tool that prints size, alignment and field offsets for any struct. Predict the padding of ten supplied structs first, then measure, then reorder the fields to win the bytes back.',
+      artifact: 'Public repo with predictions file',
+      accept: ['Predictions are committed before measurements, and git history shows it', 'Field reordering saves at least 30% of total bytes', 'Over-aligned alignas(64) types are handled', 'One false-sharing fix with before and after perf numbers'] } },
+  { id: 'N05', slug: 'counting-alloc', short: 'Allocator Traits', title: 'Templates & Allocator Traits', lane: 0.8, deps: ['N03'], hours: 6, xp: 220,
+    skill: 'The allocator model the standard library expects from you.',
+    quest: { name: 'Plug a counting allocator into the standard library',
+      brief: 'Implement a minimal C++17 allocator that counts every byte and call. Drop it into std::vector, std::map and std::string, and use the counts to explain what your standard library is really doing.',
+      artifact: 'Public repo with measurements',
+      accept: ['Only allocate, deallocate and value_type are defined; traits supply the rest', 'Rebinding works for std::map nodes', 'The measured growth factor of std::vector is reported', 'Propagation on container move assignment is tested'] } },
+  { id: 'N06', slug: 'guard-arena', short: 'Virtual Memory', title: 'Virtual Memory & mmap', lane: -0.8, deps: ['N02', 'N04'], hours: 8, xp: 280,
+    skill: 'Pages, reservations, commits, and asking the kernel for memory directly.',
+    quest: { name: 'Back a bump arena with guard pages',
+      brief: 'Reserve 1 GiB of address space with mmap, commit pages only as the arena grows, and put a guard page at the end so an overflow dies loudly instead of corrupting a neighbour.',
+      artifact: 'Public repo with RSS graph',
+      accept: ['Reserve and commit are separate: PROT_NONE first, then mprotect', 'An overflow test dies with SIGSEGV on the guard page, caught by the harness', 'Reset is O(1) and releases pages with madvise', 'An RSS graph shows commit on demand'] } },
+  { id: 'N07', slug: 'fixed-pool', short: 'Free Lists', title: 'Free Lists & Fragmentation', lane: 0.3, deps: ['N04', 'N05'], hours: 8, xp: 300,
+    skill: 'Recycling blocks in constant time, and measuring what gets wasted.',
+    quest: { name: 'Beat malloc with a fixed-size pool',
+      brief: 'Write a pool allocator whose free list lives inside the freed blocks themselves. Benchmark it against malloc on small-object churn and chart the fragmentation from a replayed allocation trace.',
+      artifact: 'Public repo with benchmark output',
+      accept: ['The free list is stored in freed blocks, with zero metadata overhead', 'Debug builds detect a double free', 'At least 3x faster than malloc on 64-byte churn', 'Fragmentation chart from a replayed trace'] } },
+  { id: 'N08', slug: 'allocator', short: 'Custom Allocator', title: 'Custom Memory Allocator', lane: -0.25, deps: ['N06', 'N07'], hours: 30, xp: 1000, boss: true,
+    skill: 'Everything upstream, combined into one general-purpose allocator.',
+    quest: { name: 'Replace malloc in a real program',
+      brief: 'Build a general-purpose allocator with size classes, per-thread caches and mmap-backed large allocations. Load it into a real program with LD_PRELOAD and make it survive, then make it fast.',
+      artifact: 'Public repo, benchmarks and design doc',
+      accept: ['redis-server or clang runs under LD_PRELOAD without crashing', 'Within 10% of glibc malloc on the larson benchmark, and ahead on one workload', 'RSS proof that large blocks return to the OS', 'Design doc covers size classes, thread caches and the tradeoff you would revisit'] } },
+];
+
+function buildGraph(raw) {
+  const byId = {}; raw.forEach(n => { byId[n.id] = Object.assign({ children: [], anc: new Set(), desc: new Set() }, n); });
+  const nodes = raw.map(n => byId[n.id]);
+  const edges = [];
+  nodes.forEach(n => n.deps.forEach(p => { byId[p].children.push(n.id); edges.push([p, n.id]); }));
+  // Raw data is listed in topological order, so one forward pass gives depth and ancestors.
+  nodes.forEach(n => {
+    n.depth = n.deps.length ? Math.max.apply(null, n.deps.map(p => byId[p].depth)) + 1 : 0;
+    n.deps.forEach(p => { n.anc.add(p); byId[p].anc.forEach(a => n.anc.add(a)); });
+  });
+  nodes.forEach(n => n.anc.forEach(a => byId[a].desc.add(n.id)));
+  const lanes = nodes.map(n => n.lane);
+  return { nodes, edges, byId, maxDepth: Math.max.apply(null, nodes.map(n => n.depth)),
+    laneMin: Math.min.apply(null, lanes), laneMax: Math.max.apply(null, lanes),
+    totalXp: nodes.reduce((s, n) => s + n.xp, 0) };
+}
+const GRAPH = buildGraph(RAW);
+const statusFor = (verified, id) => verified.indexOf(id) >= 0 ? 'verified'
+  : GRAPH.byId[id].deps.every(p => verified.indexOf(p) >= 0) ? 'active' : 'locked';
+
+/* =====================================================================
+   2. MATRIX ENGINE — imperative canvas layer. Owns physics, camera and
+   effects; React only tells it what is verified, hovered and selected.
+   ===================================================================== */
+function createEngine(canvas, G, cb) {
+  const ctx = canvas.getContext('2d');
+  const SLATE = [58, 66, 76], CYAN = [34, 229, 255], GREEN = [140, 255, 63], GOLD = [255, 200, 61],
+        INK = [231, 238, 244], MUTED = [135, 147, 160], FAINT = [91, 102, 114];
+  const MONO = "'JetBrains Mono', ui-monospace, Menlo, monospace", SANS = "'Outfit', 'Avenir Next', system-ui, sans-serif";
+  const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  const rgba = (c, a) => 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + Math.max(0, Math.min(1, a)).toFixed(3) + ')';
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  let W = 1, H = 1, dpr = 1, vertical = false, COL = 210, LANE = 240;
+  let live = false, raf = 0, destroyed = false;
+  let verified = new Set(), hoverId = null, selectedId = null, userMoved = false, followed = false, lastHover = null;
+  let insets = { l: 0, r: 0, t: 0, b: 0 };
+  const cam = { x: 0, y: 0, k: 1, cx: 0, cy: 0 };
+  let fly = null, anchor = null;
+  const nodes = G.nodes.map(d => ({ id: d.id, d, x: 0, y: 0, vx: 0, vy: 0, r: d.boss ? 40 : 30,
+    lockT: 0, verT: 0, lockTo: 0, verTo: 0, s: 1, sv: 0, ba: 0, fa: 1, born: 0, held: false, flash: 0 }));
+  const byId = {}; nodes.forEach(n => { byId[n.id] = n; });
+  const edges = G.edges.map(e => ({ s: byId[e[0]], t: byId[e[1]], a: 1, hl: 0, dir: 1 }));
+  let rings = [], sparks = [], pulses = [], queue = [];
+
+  const unlocked = n => n.d.deps.every(p => verified.has(p));
+  const nodeR = n => n.r * (0.84 + 0.16 * n.lockT) * n.s;
+  const nodeCol = n => mix(mix(SLATE, CYAN, n.lockT), n.d.boss ? GOLD : GREEN, n.verT);
+  const anchorOf = n => { const m = (n.d.depth - G.maxDepth / 2) * COL, c = n.d.lane * LANE; return vertical ? [c, m] : [m, c]; };
+  const later = (ms, fn) => queue.push({ at: performance.now() + ms, fn });
+
+  /* ---- layout + camera ---- */
+  function fitTarget() {
+    const fw = Math.max(140, W - insets.l - insets.r), fh = Math.max(140, H - insets.t - insets.b);
+    const main = G.maxDepth * COL + 190, cross = (G.laneMax - G.laneMin) * LANE + 200;
+    const k = clamp(Math.min(fw / (vertical ? cross : main), fh / (vertical ? main : cross)), 0.3, 1.2);
+    const mid = (G.laneMax + G.laneMin) / 2 * LANE;
+    return { x: vertical ? mid : 0, y: (vertical ? 0 : mid) + 16, k };
+  }
+  const centre = () => [insets.l + (W - insets.l - insets.r) / 2, insets.t + (H - insets.t - insets.b) / 2];
+  const toWorld = (sx, sy) => [(sx - cam.cx) / cam.k + cam.x, (sy - cam.cy) / cam.k + cam.y];
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    W = Math.max(1, r.width); H = Math.max(1, r.height); dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    vertical = W < 720 && H > W;
+    COL = vertical ? 150 : 210; LANE = vertical ? 150 : 240;
+    if (!userMoved && !followed) fly = fitTarget();
+  }
+  function scatter() {
+    const t0 = performance.now();
+    nodes.forEach((n, i) => {
+      n.x = (Math.random() - 0.5) * 30 + (vertical ? n.d.lane * 24 : 0);
+      n.y = (Math.random() - 0.5) * 30 + (vertical ? 0 : n.d.lane * 24);
+      n.vx = n.vy = 0; n.ba = 0; n.born = t0 + (RM ? 0 : 120 + n.d.depth * 130);
+    });
+    if (RM) { for (let i = 0; i < 400; i++) step(t0 + 1); nodes.forEach(n => { n.ba = 1; }); }
+  }
+
+  /* ---- force-directed physics: charge repulsion, edge springs, layer anchors ---- */
+  function step(now) {
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i]; if (now < a.born) continue;
+      const an = anchorOf(a);
+      a.vx += (an[0] - a.x) * 0.045; a.vy += (an[1] - a.y) * 0.045;
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j]; if (now < b.born) continue;
+        let dx = b.x - a.x, dy = b.y - a.y; let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+        const d = Math.sqrt(d2), f = Math.min(9, 5200 * (a.r + b.r) / 60 / d2);
+        a.vx -= dx / d * f; a.vy -= dy / d * f; b.vx += dx / d * f; b.vy += dy / d * f;
+      }
+    }
+    for (const e of edges) {
+      if (now < e.s.born || now < e.t.born) continue;
+      const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
+      const f = (d - COL * 0.95) * 0.012;
+      e.s.vx += dx / d * f; e.s.vy += dy / d * f; e.t.vx -= dx / d * f; e.t.vy -= dy / d * f;
+    }
+    for (const n of nodes) {
+      if (now < n.born) continue;
+      if (n.held) { n.vx = n.vy = 0; continue; }
+      n.vx *= 0.86; n.vy *= 0.86; n.x += n.vx; n.y += n.vy;
+    }
+  }
+
+  /* ---- unlock choreography ---- */
+  function burst(n) {
+    const now = performance.now(), col = n.d.boss ? GOLD : GREEN;
+    n.verTo = 1; n.lockTo = 1; n.sv += 0.17; n.flash = 1;
+    rings.push({ n, t0: now, dur: 900, r1: 150, col, lw: 2.6 }, { n, t0: now + 130, dur: 1000, r1: 240, col, lw: 1.6 }, { n, t0: now + 280, dur: 1100, r1: 340, col: INK, lw: 0.8 });
+    for (let i = 0; i < 44; i++) {
+      const a = Math.random() * 6.283, v = 3 + Math.random() * 8;
+      sparks.push({ x: n.x, y: n.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, decay: 0.014 + Math.random() * 0.02, col: Math.random() < 0.3 ? INK : col });
+    }
+    for (const o of nodes) {            // the shockwave physically shoves neighbours
+      if (o === n) continue;
+      const dx = o.x - n.x, dy = o.y - n.y, d = Math.sqrt(dx * dx + dy * dy) || 1, f = 11 * Math.exp(-d / 260);
+      o.vx += dx / d * f; o.vy += dy / d * f;
+    }
+    for (const e of edges) {
+      if (e.s !== n) continue;
+      pulses.push({ e, t0: now + 200, dur: 520 });
+      const c = e.t;
+      later(720, () => {
+        if (c.verTo) return;
+        if (unlocked(c)) {
+          c.lockTo = 1; c.sv += 0.22;
+          rings.push({ n: c, t0: performance.now(), dur: 750, r1: 80, col: CYAN, lw: 2 });
+          for (let i = 0; i < 16; i++) { const a = Math.random() * 6.283, v = 2 + Math.random() * 4; sparks.push({ x: c.x, y: c.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, decay: 0.03, col: CYAN }); }
+        } else { c.sv += 0.06; rings.push({ n: c, t0: performance.now(), dur: 500, r1: 34, col: MUTED, lw: 1 }); }
+      });
+    }
+  }
+
+  /* ---- drawing ---- */
+  function hex(x, y, r) {
+    ctx.beginPath(); const a0 = vertical ? Math.PI / 2 : 0;
+    for (let i = 0; i < 6; i++) { const a = a0 + i * Math.PI / 3, px = x + Math.cos(a) * r, py = y + Math.sin(a) * r; if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); }
+    ctx.closePath();
+  }
+  function ctrl(e) {
+    const a = e.s, b = e.t;
+    if (vertical) { const m = (b.y - a.y) * 0.5; return [a.x, a.y + m, b.x, b.y - m]; }
+    const m = (b.x - a.x) * 0.5; return [a.x + m, a.y, b.x - m, b.y];
+  }
+  function bez(e, c, t) {
+    const u = 1 - t, a = u * u * u, b = 3 * u * u * t, d = 3 * u * t * t, f = t * t * t;
+    return [a * e.s.x + b * c[0] + d * c[2] + f * e.t.x, a * e.s.y + b * c[1] + d * c[3] + f * e.t.y];
+  }
+  function drawBackdrop() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#0A0A0A'; ctx.fillRect(0, 0, W, H);
+    const g = ctx.createRadialGradient(cam.cx, cam.cy, 0, cam.cx, cam.cy, Math.max(W, H) * 0.62);
+    g.addColorStop(0, 'rgba(34,229,255,0.055)'); g.addColorStop(0.5, 'rgba(60,90,140,0.025)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // Two parallax planes behind the graph: far dots, nearer crosshairs.
+    const planes = [{ p: 0.22, gap: 46, a: 0.13, cross: false }, { p: 0.5, gap: 138, a: 0.2, cross: true }];
+    for (const L of planes) {
+      const kl = 1 + (cam.k - 1) * L.p, gap = L.gap * kl;
+      const ox = (((cam.cx - cam.x * cam.k * L.p) % gap) + gap) % gap, oy = (((cam.cy - cam.y * cam.k * L.p) % gap) + gap) % gap;
+      ctx.fillStyle = 'rgba(170,200,230,' + L.a + ')';
+      for (let x = ox - gap; x < W + gap; x += gap) for (let y = oy - gap; y < H + gap; y += gap) {
+        if (L.cross) { ctx.fillRect(x - 3, y, 7, 1); ctx.fillRect(x, y - 3, 1, 7); } else ctx.fillRect(x, y, 1.2, 1.2);
+      }
+    }
+  }
+  function drawEdge(e, t) {
+    const B = Math.min(e.s.ba, e.t.ba), A = B * e.a; if (B < 0.01) return;
+    const c = ctrl(e), sV = e.s.verT, tL = e.t.lockT, tV = e.t.verT, col = mix(SLATE, GREEN, sV);
+    const path = () => { ctx.beginPath(); ctx.moveTo(e.s.x, e.s.y); ctx.bezierCurveTo(c[0], c[1], c[2], c[3], e.t.x, e.t.y); };
+    ctx.lineCap = 'round';
+    path(); ctx.setLineDash(sV < 0.5 ? [2, 7] : []); ctx.lineWidth = 1.4; ctx.strokeStyle = rgba(col, (0.6 + 0.25 * sV) * A); ctx.stroke(); ctx.setLineDash([]);
+    const flow = sV * tL * (1 - tV);
+    if (flow > 0.02) {                   // verified -> active: the wire is carrying current
+      path(); ctx.lineWidth = 9; ctx.strokeStyle = rgba(CYAN, 0.08 * flow * A); ctx.stroke();
+      const g = ctx.createLinearGradient(e.s.x, e.s.y, e.t.x, e.t.y);
+      g.addColorStop(0, rgba(GREEN, 0.9 * flow * A)); g.addColorStop(1, rgba(CYAN, 0.9 * flow * A));
+      path(); ctx.lineWidth = 2; ctx.strokeStyle = g; ctx.stroke();
+      ctx.globalCompositeOperation = 'lighter';
+      const N = 3;
+      for (let i = 0; i < N; i++) {
+        const p = RM ? (i + 0.5) / N : (t * 0.34 + i / N) % 1;
+        for (let j = 0; j < 8; j++) {
+          const q = p - j * 0.015; if (q < 0.03 || q > 0.97) continue;
+          const pt = bez(e, c, q), f = 1 - j / 8;
+          ctx.fillStyle = rgba(mix(GREEN, CYAN, q), 0.9 * f * f * flow * A);
+          ctx.beginPath(); ctx.arc(pt[0], pt[1], 0.8 + 2.3 * f, 0, 6.3); ctx.fill();
+        }
+        if (p > 0.03 && p < 0.97) { const pt = bez(e, c, p); ctx.fillStyle = rgba(CYAN, 0.16 * flow * A); ctx.beginPath(); ctx.arc(pt[0], pt[1], 8, 0, 6.3); ctx.fill(); ctx.fillStyle = rgba(INK, 0.9 * flow * A); ctx.beginPath(); ctx.arc(pt[0], pt[1], 1.4, 0, 6.3); ctx.fill(); }
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    if (e.hl > 0.02) {                   // lineage highlight: solid white upstream, marching cyan downstream
+      path(); ctx.lineWidth = 2.2;
+      if (e.dir > 0) { ctx.setLineDash([7, 6]); ctx.lineDashOffset = RM ? 0 : -t * 34; }
+      ctx.strokeStyle = rgba(e.dir > 0 ? CYAN : [255, 255, 255], 0.9 * e.hl * B); ctx.stroke(); ctx.setLineDash([]); ctx.lineDashOffset = 0;
+    }
+    const Rt = nodeR(e.t) + 7; let ta = 1, pt = bez(e, c, 1);
+    for (; ta > 0.5; ta -= 0.02) { pt = bez(e, c, ta); if (Math.hypot(pt[0] - e.t.x, pt[1] - e.t.y) > Rt) break; }
+    const q = bez(e, c, ta - 0.03), ang = Math.atan2(pt[1] - q[1], pt[0] - q[0]);
+    ctx.save(); ctx.translate(pt[0], pt[1]); ctx.rotate(ang); ctx.beginPath(); ctx.moveTo(5, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath();
+    ctx.fillStyle = rgba(e.hl > 0.5 ? (e.dir > 0 ? CYAN : [255, 255, 255]) : flow > 0.5 ? CYAN : col, Math.max(A, e.hl * B) * 0.95); ctx.fill(); ctx.restore();
+  }
+  function drawNode(n, t) {
+    const A = n.ba * n.fa; if (A < 0.01) return;
+    const col = nodeCol(n), R = nodeR(n), act = n.lockT * (1 - n.verT), ver = n.verT, lock = 1 - n.lockT;
+    const pulse = RM ? 0.6 : 0.5 + 0.5 * Math.sin(t * 2.7 + n.d.depth * 1.3);
+    ctx.globalAlpha = A;
+    const glow = act * (0.2 + 0.16 * pulse) + ver * 0.2 + n.flash * 0.5;
+    if (glow > 0.01) {
+      const g = ctx.createRadialGradient(n.x, n.y, R * 0.4, n.x, n.y, R * 2.7);
+      g.addColorStop(0, rgba(n.flash > 0.3 ? mix(col, INK, n.flash) : col, glow)); g.addColorStop(1, rgba(col, 0));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(n.x, n.y, R * 2.7, 0, 6.3); ctx.fill();
+    }
+    if (act > 0.05) {
+      if (!RM) { const p = (t * 0.45 + n.d.depth * 0.21) % 1; ctx.strokeStyle = rgba(CYAN, (1 - p) * 0.55 * act); ctx.lineWidth = 1.2; hex(n.x, n.y, R + 4 + p * 30); ctx.stroke(); }
+      ctx.save(); ctx.translate(n.x, n.y); ctx.rotate(RM ? 0 : t * 0.5); ctx.setLineDash([3, 9]); ctx.lineWidth = 1.2; ctx.strokeStyle = rgba(CYAN, 0.7 * act);
+      ctx.beginPath(); ctx.arc(0, 0, R + 10, 0, 6.3); ctx.stroke(); ctx.restore(); ctx.setLineDash([]);
+    }
+    if (n.d.boss) { hex(n.x, n.y, R + 7); ctx.lineWidth = 1; ctx.strokeStyle = rgba(col, 0.55); ctx.stroke(); }
+    hex(n.x, n.y, R); ctx.fillStyle = '#0B0E11'; ctx.fill();
+    ctx.lineJoin = 'round'; ctx.lineWidth = 1.4 + 0.8 * ver + 0.4 * act; ctx.strokeStyle = rgba(col, 1); ctx.stroke();
+    hex(n.x, n.y, R * 0.7); ctx.fillStyle = rgba(col, 0.1 + 0.1 * act * pulse + 0.18 * ver); ctx.fill();
+    ctx.lineCap = 'round';
+    if (lock > 0.05) {                    // padlock
+      ctx.strokeStyle = rgba(FAINT, lock); ctx.fillStyle = rgba(FAINT, lock); ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.arc(n.x, n.y - 2, 4, Math.PI, 0); ctx.stroke(); ctx.fillRect(n.x - 6, n.y - 2, 12, 9);
+    }
+    if (act > 0.05) { ctx.fillStyle = rgba(CYAN, act); ctx.beginPath(); ctx.moveTo(n.x - 4.5, n.y - 7); ctx.lineTo(n.x + 7.5, n.y); ctx.lineTo(n.x - 4.5, n.y + 7); ctx.closePath(); ctx.fill(); }
+    if (ver > 0.05) { ctx.strokeStyle = rgba(col, ver); ctx.lineWidth = 2.6; ctx.beginPath(); ctx.moveTo(n.x - 7, n.y + 0.5); ctx.lineTo(n.x - 2, n.y + 5.5); ctx.lineTo(n.x + 7.5, n.y - 5.5); ctx.stroke(); }
+    if (n.id === hoverId) { hex(n.x, n.y, R + 5); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.stroke(); }
+    if (n.id === selectedId) {            // engine-style selection brackets
+      const b = R + 15 + (RM ? 0 : Math.sin(t * 3) * 1.5), L = 8; ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.5; ctx.beginPath();
+      for (const sx of [-1, 1]) for (const sy of [-1, 1]) { ctx.moveTo(n.x + sx * b, n.y + sy * (b - L)); ctx.lineTo(n.x + sx * b, n.y + sy * b); ctx.lineTo(n.x + sx * (b - L), n.y + sy * b); }
+      ctx.stroke();
+    }
+    // Labels fade as you zoom out, leaving the macro-structure.
+    const la = clamp((cam.k - 0.4) / 0.24, 0, 1);
+    if (la > 0.01) {
+      ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+      if (vertical) { ctx.font = '500 13.5px ' + SANS; const w = Math.max(ctx.measureText(n.d.short).width, 44) + 12; ctx.fillStyle = 'rgba(10,10,10,' + (0.8 * la).toFixed(3) + ')'; ctx.fillRect(n.x - w / 2, n.y + R + 9, w, 33); }
+      ctx.font = '500 10px ' + MONO; ctx.fillStyle = rgba(mix(FAINT, col, n.lockT), la);
+      ctx.fillText(n.id + (n.d.boss ? ' · BOSS' : ''), n.x, n.y + R + 20);
+      ctx.font = '500 13.5px ' + SANS; ctx.fillStyle = rgba(mix(MUTED, INK, n.lockT), la);
+      ctx.fillText(n.d.short, n.x, n.y + R + 37);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Fixed 60 Hz simulation steps, so the motion runs at the same speed on any display.
+  let lastT = 0, acc = 0;
+  function frame(now) {
+    if (destroyed) return;
+    raf = requestAnimationFrame(frame);
+    acc += Math.min(200, now - (lastT || now)); lastT = now;
+    let it = 0; while (acc >= 16.6 && it < 8) { tick(now); acc -= 16.6; it++; }
+    if (it === 8) acc = 0;
+    draw(now);
+  }
+  function tick(now) {
+    for (let i = queue.length - 1; i >= 0; i--) if (queue[i].at <= now) { const q = queue.splice(i, 1)[0]; q.fn(); }
+    if (live) step(now);
+    for (const s of sparks) { s.x += s.vx; s.y += s.vy; s.vx *= 0.94; s.vy *= 0.94; s.life -= s.decay; }
+    const fid = hoverId || selectedId, fn = fid ? G.byId[fid] : null;
+    for (const n of nodes) {
+      n.lockT += (n.lockTo - n.lockT) * 0.09; n.verT += (n.verTo - n.verT) * 0.09;
+      n.sv += (1 - n.s) * 0.14; n.sv *= 0.8; n.s += n.sv; n.flash *= 0.92;
+      n.ba += ((live && now >= n.born ? 1 : 0) - n.ba) * 0.12;
+      const on = !fn || n.id === fid || fn.anc.has(n.id) || fn.desc.has(n.id);
+      n.fa += ((on ? 1 : 0.13) - n.fa) * 0.4;
+    }
+    for (const e of edges) {
+      const up = !!fn && (e.t.id === fid || fn.anc.has(e.t.id)) && fn.anc.has(e.s.id);
+      const down = !!fn && (e.s.id === fid || fn.desc.has(e.s.id)) && fn.desc.has(e.t.id);
+      e.a += ((!fn || up || down ? 1 : 0.07) - e.a) * 0.4; e.hl += ((up || down ? 1 : 0) - e.hl) * 0.4;
+      if (up) e.dir = -1; else if (down) e.dir = 1;
+    }
+    const ct = centre(); cam.cx += (ct[0] - cam.cx) * 0.14; cam.cy += (ct[1] - cam.cy) * 0.14;
+    if (anchor) {
+      cam.k += (anchor.tk - cam.k) * 0.22;
+      cam.x = anchor.wx - (anchor.sx - cam.cx) / cam.k; cam.y = anchor.wy - (anchor.sy - cam.cy) / cam.k;
+      if (Math.abs(anchor.tk - cam.k) < 0.0008) anchor = null;
+    } else if (fly) {
+      cam.x += (fly.x - cam.x) * 0.1; cam.y += (fly.y - cam.y) * 0.1; cam.k += (fly.k - cam.k) * 0.1;
+      if (Math.abs(fly.k - cam.k) < 0.001 && Math.abs(fly.x - cam.x) < 0.3 && Math.abs(fly.y - cam.y) < 0.3) fly = null;
+    }
+  }
+  function draw(now) {
+    const t = now / 1000;
+    drawBackdrop();
+    ctx.setTransform(dpr * cam.k, 0, 0, dpr * cam.k, dpr * (cam.cx - cam.x * cam.k), dpr * (cam.cy - cam.y * cam.k));
+    for (const e of edges) drawEdge(e, t);
+    ctx.globalCompositeOperation = 'lighter';
+    pulses = pulses.filter(p => now < p.t0 + p.dur);
+    for (const p of pulses) {            // the charge that runs down the wire before a node unlocks
+      const u = (now - p.t0) / p.dur; if (u < 0) continue; const c = ctrl(p.e);
+      for (let j = 0; j < 12; j++) { const q = u - j * 0.022; if (q < 0) break; const pt = bez(p.e, c, q), f = 1 - j / 12; ctx.fillStyle = rgba(mix(INK, CYAN, j / 12), f * f); ctx.beginPath(); ctx.arc(pt[0], pt[1], 1 + 4 * f, 0, 6.3); ctx.fill(); }
+      const pt = bez(p.e, c, u); ctx.fillStyle = rgba(CYAN, 0.22); ctx.beginPath(); ctx.arc(pt[0], pt[1], 16, 0, 6.3); ctx.fill();
+    }
+    rings = rings.filter(r => now < r.t0 + r.dur);
+    for (const r of rings) {
+      const u = (now - r.t0) / r.dur; if (u < 0) continue; const ez = 1 - Math.pow(1 - u, 3);
+      ctx.strokeStyle = rgba(r.col, (1 - u) * 0.9); ctx.lineWidth = r.lw * (1 + (1 - u));
+      ctx.beginPath(); ctx.arc(r.n.x, r.n.y, r.n.r + ez * r.r1, 0, 6.3); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    for (const n of nodes) drawNode(n, t);
+    ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+    sparks = sparks.filter(s => s.life > 0);
+    for (const s of sparks) {
+      ctx.strokeStyle = rgba(s.col, s.life); ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x - s.vx * 2.4, s.y - s.vy * 2.4); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ---- pointer input: pan, pinch, wheel zoom, node drag, click ---- */
+  const ptrs = new Map(); let drag = null, pinch = null;
+  const local = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  function hit(sx, sy) {
+    if (!live) return null; const w = toWorld(sx, sy); let best = null, bd = 1e9;
+    for (const n of nodes) { const d = Math.hypot(n.x - w[0], n.y - w[1]); if (d < nodeR(n) + 8 && d < bd) { best = n; bd = d; } }
+    return best;
+  }
+  function report(id) { if (id !== lastHover) { lastHover = id; cb.onHover(id); } }
+  function zoomTo(tk, sx, sy) { const w = toWorld(sx, sy); anchor = { tk: clamp(tk, 0.22, 2.6), sx, sy, wx: w[0], wy: w[1] }; fly = null; userMoved = true; }
+  function onDown(e) {
+    const p = local(e); try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    ptrs.set(e.pointerId, p);
+    if (ptrs.size === 2) {
+      const a = Array.from(ptrs.values()), mid = [(a[0][0] + a[1][0]) / 2, (a[0][1] + a[1][1]) / 2];
+      if (drag && drag.node) drag.node.held = false; drag = null;
+      pinch = { d: Math.hypot(a[0][0] - a[1][0], a[0][1] - a[1][1]) || 1, k: cam.k, w: toWorld(mid[0], mid[1]) }; fly = anchor = null; userMoved = true;
+    } else if (ptrs.size === 1) {
+      const n = hit(p[0], p[1]);
+      drag = { node: n, x0: p[0], y0: p[1], cx: cam.x, cy: cam.y, moved: false };
+    }
+  }
+  function onMove(e) {
+    const p = local(e);
+    if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, p);
+    if (pinch && ptrs.size === 2) {
+      const a = Array.from(ptrs.values()), mid = [(a[0][0] + a[1][0]) / 2, (a[0][1] + a[1][1]) / 2];
+      cam.k = clamp(pinch.k * Math.hypot(a[0][0] - a[1][0], a[0][1] - a[1][1]) / pinch.d, 0.22, 2.6);
+      cam.x = pinch.w[0] - (mid[0] - cam.cx) / cam.k; cam.y = pinch.w[1] - (mid[1] - cam.cy) / cam.k; return;
+    }
+    if (drag) {
+      const dx = p[0] - drag.x0, dy = p[1] - drag.y0;
+      if (!drag.moved && Math.hypot(dx, dy) > 5) { drag.moved = true; if (!drag.node) { fly = anchor = null; userMoved = true; } }
+      if (drag.moved) {
+        if (drag.node) { const w = toWorld(p[0], p[1]); drag.node.held = true; drag.node.x = w[0]; drag.node.y = w[1]; }
+        else { cam.x = drag.cx - dx / cam.k; cam.y = drag.cy - dy / cam.k; }
+        canvas.style.cursor = 'grabbing';
+      }
+      return;
+    }
+    if (e.pointerType !== 'touch') { const n = hit(p[0], p[1]); report(n ? n.id : null); canvas.style.cursor = n ? 'pointer' : 'grab'; }
+  }
+  function onUp(e) {
+    ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null;
+    if (drag) {
+      if (drag.node) drag.node.held = false;
+      if (!drag.moved && e.type === 'pointerup') cb.onSelect(drag.node ? drag.node.id : null);
+      drag = null; canvas.style.cursor = 'grab';
+    }
+  }
+  function onWheel(e) { e.preventDefault(); const p = local(e); const base = anchor ? anchor.tk : cam.k; zoomTo(base * Math.exp(-e.deltaY * (e.ctrlKey ? 0.012 : 0.0016)), p[0], p[1]); }
+  const onLeave = () => { if (!drag) report(null); };
+  canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointercancel', onUp);
+  canvas.addEventListener('pointerleave', onLeave); canvas.addEventListener('wheel', onWheel, { passive: false });
+  const ro = new ResizeObserver(resize); ro.observe(canvas);
+  resize(); const c0 = centre(); cam.cx = c0[0]; cam.cy = c0[1];
+  raf = requestAnimationFrame(frame);
+
+  return {
+    start() { userMoved = false; followed = false; anchor = null; const f = fitTarget(); cam.x = f.x; cam.y = f.y; cam.k = f.k * (RM ? 1 : 0.82); fly = f; live = true; scatter(); },
+    stop() { live = false; queue = []; rings = []; sparks = []; pulses = []; },
+    resettle() { if (live) scatter(); },
+    setVerified(list, delay) {
+      const next = new Set(list), added = list.filter(id => !verified.has(id));
+      const shrunk = Array.from(verified).some(id => !next.has(id));
+      verified = next;
+      if (!live || shrunk) {
+        if (shrunk) queue = [];
+        for (const n of nodes) { n.verTo = verified.has(n.id) ? 1 : 0; n.lockTo = unlocked(n) ? 1 : 0; if (!live) { n.verT = n.verTo; n.lockT = n.lockTo; } }
+        return;
+      }
+      added.forEach(id => later(delay || 0, () => burst(byId[id])));
+    },
+    setHover(id) { hoverId = id; },
+    setView(sel, ins, follow) {
+      selectedId = sel; insets = ins;
+      if (follow && sel) { const n = byId[sel]; followed = true; anchor = null; fly = { x: n.x, y: n.y + 16, k: clamp(cam.k, 0.75, 1.1) }; }
+      else if (followed) { followed = false; userMoved = false; anchor = null; fly = fitTarget(); }
+      else if (!userMoved) fly = fitTarget();
+    },
+    zoomBy(f) { const c = centre(); zoomTo((anchor ? anchor.tk : cam.k) * f, c[0], c[1]); },
+    fit() { userMoved = false; anchor = null; fly = fitTarget(); },
+    destroy() { destroyed = true; cancelAnimationFrame(raf); ro.disconnect(); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove); canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onUp); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('wheel', onWheel); },
+  };
+}
+
+/* =====================================================================
+   3. REACT LAYER — session state and the glass panels.
+   ===================================================================== */
+const ICON = { close: 'M4 4l8 8M12 4l-8 8', plus: 'M8 3v10M3 8h10', minus: 'M3 8h10', fit: 'M3 6V3h3M10 3h3v3M13 10v3h-3M6 13H3v-3',
+  check: 'M3 8.5l3.2 3.2L13 5', lock: 'M4.5 7.5h7v5h-7zM6 7.5V5.5a2 2 0 014 0v2', spin: 'M13 8a5 5 0 11-1.6-3.6M13 3v2.6h-2.6', target: 'M8 2v3M8 11v3M2 8h3M11 8h3M8 6.2a1.8 1.8 0 100 3.6 1.8 1.8 0 000-3.6z', undo: 'M3 7h7a3 3 0 010 6H7M3 7l3-3M3 7l3 3' };
+const Icon = (name, size) => h('svg', { width: size || 14, height: size || 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, h('path', { d: ICON[name] }));
+const fmt = n => n.toLocaleString('en-US');
+function fakeHash(s) { let a = 2166136261; for (let i = 0; i < s.length; i++) { a ^= s.charCodeAt(i); a = Math.imul(a, 16777619); } const x = (a >>> 0).toString(16).padStart(8, '0'); return '0x' + x + '…' + x.split('').reverse().join('').slice(0, 4); }
+function useMedia(q) {
+  const [m, setM] = useState(() => matchMedia(q).matches);
+  useEffect(() => { const mq = matchMedia(q), f = () => setM(mq.matches); mq.addEventListener('change', f); return () => mq.removeEventListener('change', f); }, [q]);
+  return m;
+}
+
+const INIT_PROOFS = { N01: { url: 'github.com/you/strview', hash: fakeHash('N01github.com/you/strview'), at: '2026-11-02 18:40 UTC' } };
+const INIT = { phase: 'input', target: '', verified: ['N01'], proofs: INIT_PROOFS, selected: null, hover: null };
+function reducer(s, a) {
+  switch (a.type) {
+    case 'COMPILE': return Object.assign({}, s, { phase: 'generating', target: a.target });
+    case 'READY': return Object.assign({}, s, { phase: 'matrix' });
+    case 'SELECT': return Object.assign({}, s, { selected: a.id });
+    case 'HOVER': return s.hover === a.id ? s : Object.assign({}, s, { hover: a.id });
+    case 'VERIFY': return s.verified.indexOf(a.id) >= 0 ? s : Object.assign({}, s, { verified: s.verified.concat(a.id), proofs: Object.assign({}, s.proofs, { [a.id]: a.proof }), selected: a.close ? null : s.selected });
+    case 'RESET': return Object.assign({}, s, { verified: ['N01'], proofs: INIT_PROOFS, selected: null });
+    case 'NEW_TARGET': return Object.assign({}, INIT);
+    default: return s;
+  }
+}
+
+function MatrixCanvas(props) {
+  const ref = useRef(null), cbs = useRef(props); cbs.current = props;
+  useEffect(() => {
+    const eng = createEngine(ref.current, GRAPH, { onHover: id => cbs.current.onHover(id), onSelect: id => cbs.current.onSelect(id) });
+    props.engineRef.current = eng; return () => eng.destroy();
+  }, []);
+  return h('canvas', { ref, className: 'stage', role: 'img', 'aria-label': 'Skill graph: eight nodes from C++ Fundamentals to Custom Memory Allocator. Use the node index or click a node to open its quest.' });
+}
+
+const EXAMPLES = ['github.com/microsoft/mimalloc', 'Staff Engineer at Stripe', 'Systems Engineer, allocator team'];
+const LOG = [t => ['resolve', 'target "' + t + '"'], () => ['extract', '8 load-bearing skills (sample set)'], () => ['toposort', '10 edges · 5 tiers · 0 cycles'], () => ['quests', '8 generated · 1 boss fight · ' + fmt(GRAPH.totalXp) + ' XP'], () => ['render', 'matrix']];
+
+function Terminal({ phase, target, onCompile, onReady }) {
+  const [val, setVal] = useState(EXAMPLES[0]), [err, setErr] = useState(''), [step, setStep] = useState(0);
+  const input = useRef(null);
+  useEffect(() => { if (phase === 'input' && input.current && matchMedia('(pointer: fine)').matches) input.current.focus(); }, [phase]);
+  useEffect(() => {
+    if (phase !== 'generating') { if (phase === 'input') setStep(0); return; }
+    let i = 0; const id = setInterval(() => { i++; setStep(i); if (i > LOG.length) { clearInterval(id); onReady(); } }, RM ? 60 : 340);
+    return () => clearInterval(id);
+  }, [phase]);
+  const submit = e => { e.preventDefault(); const v = val.trim(); if (!v) { setErr('Enter a role or a repo URL to compile against.'); return; } setErr(''); onCompile(v); };
+  const busy = phase !== 'input';
+  return h('div', { className: 'termwrap', 'aria-hidden': phase === 'matrix' },
+    h('section', { className: 'term glass', 'aria-label': 'Target input' },
+      h('div', { className: 'term-head eyebrow' }, h('span', null, 'matrix // compiler'), h('span', null, busy ? 'compiling' : 'awaiting target')),
+      busy
+        ? h('div', { className: 'term-body' },
+            h('div', { className: 'log', role: 'status' }, LOG.slice(0, step + 1).map((f, i) => {
+              const l = f(target), done = i < step;
+              return h('div', { key: i }, h('span', { className: done ? 'ok' : 'run' }, done ? '✓' : '›'), h('span', { className: 'k' }, l[0]), h('span', { className: 'v' }, l[1]));
+            })))
+        : h('form', { className: 'term-body', onSubmit: submit, noValidate: true },
+            h('h1', null, 'Name the target. Get the ', h('span', null, 'critical path'), ' of proof it takes to reach it.'),
+            h('p', { className: 'lede' }, 'Paste a role or a repository. The matrix compiles it into a dependency graph of skills, each gated by a quest you ship and verify.'),
+            h('label', { className: 'field', htmlFor: 'target-input' }, h('span', { className: 'prompt', 'aria-hidden': true }, '>'),
+              h('input', { id: 'target-input', ref: input, value: val, onChange: e => { setVal(e.target.value); setErr(''); }, placeholder: 'Staff Engineer at Stripe, or a GitHub repo URL', autoComplete: 'off', spellCheck: false, 'aria-label': 'Target role or repository' })),
+            err ? h('div', { className: 'err', role: 'alert' }, err) : null,
+            h('div', { className: 'chips' }, h('span', { className: 'eyebrow' }, 'try'), EXAMPLES.map(x => h('button', { key: x, type: 'button', className: 'chip', onClick: () => { setVal(x); setErr(''); } }, x))),
+            h('div', { className: 'term-foot' },
+              h('p', { className: 'note' }, 'Prototype: every target compiles to the same sample graph, C++ fundamentals through a custom memory allocator.'),
+              h('button', { className: 'btn primary tall', type: 'submit' }, 'Compile matrix ↵')))));
+}
+
+function TopBar({ target, verified, statusOf, onReset, onNewTarget }) {
+  const xp = GRAPH.nodes.reduce((s, n) => s + (verified.indexOf(n.id) >= 0 ? n.xp : 0), 0);
+  return h('header', { className: 'topbar glass hud' },
+    h('div', { className: 'brand' }, h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', 'aria-hidden': true }, h('path', { d: 'M8 1l6 3.5v7L8 15l-6-3.5v-7z', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4 }), h('circle', { cx: 8, cy: 8, r: 2, fill: 'currentColor' })), h('span', { className: 'wordmark' }, 'MATRIX')),
+    h('span', { className: 'sep' }),
+    h('div', { className: 'target' }, h('span', { className: 'eyebrow' }, 'target'), h('b', { title: target }, target)),
+    h('div', { className: 'progress' },
+      h('div', { className: 'segs', 'aria-hidden': true }, GRAPH.nodes.map(n => h('i', { key: n.id, 'data-s': statusOf(n.id), 'data-boss': !!n.boss }))),
+      h('span', null, h('em', null, verified.length), '/', GRAPH.nodes.length, h('span', { className: 'word' }, ' verified')),
+      h('span', { className: 'xp' }, h('em', null, fmt(xp)), ' / ', fmt(GRAPH.totalXp), ' XP')),
+    h('button', { className: 'btn haslabel', onClick: onReset, title: 'Reset progress', 'aria-label': 'Reset progress' }, Icon('undo'), h('span', { className: 'label' }, 'Reset')),
+    h('button', { className: 'btn haslabel', onClick: onNewTarget, title: 'New target', 'aria-label': 'New target' }, Icon('target'), h('span', { className: 'label' }, 'New target')));
+}
+
+function NodeIndex({ statusOf, focus, selected, onHover, onSelect }) {
+  const fn = focus ? GRAPH.byId[focus] : null;
+  return h('nav', { className: 'rail glass hud', 'aria-label': 'Node index' },
+    h('div', { className: 'eyebrow' }, h('span', null, 'node index'), h('span', null, 'tier')),
+    GRAPH.nodes.map(n => h('button', { key: n.id, className: 'row', 'data-s': statusOf(n.id), 'data-sel': selected === n.id, 'data-hot': focus === n.id,
+      'data-dim': !!fn && n.id !== focus && !fn.anc.has(n.id) && !fn.desc.has(n.id),
+      onMouseEnter: () => onHover(n.id), onMouseLeave: () => onHover(null), onFocus: () => onHover(n.id), onBlur: () => onHover(null), onClick: () => onSelect(n.id) },
+      h('span', { className: 'dot', 'data-s': statusOf(n.id), 'data-boss': !!n.boss }), h('span', { className: 'code' }, n.id), h('span', { className: 'name' }, n.short), h('span', { className: 'tier' }, n.depth + 1))));
+}
+
+function StatusBar({ focus, engineRef }) {
+  const n = focus ? GRAPH.byId[focus] : null, E = () => engineRef.current;
+  const anc = n ? GRAPH.nodes.filter(x => n.anc.has(x.id)).map(x => x.id) : [], desc = n ? GRAPH.nodes.filter(x => n.desc.has(x.id)).map(x => x.id) : [];
+  return h('footer', { className: 'statusbar glass hud' },
+    h('div', { className: 'legend' }, ['locked', 'active', 'verified'].map(s => h('span', { key: s }, h('i', { className: 'dot', 'data-s': s }), h('em', null, s)))),
+    h('div', { className: 'readout', 'aria-live': 'polite' }, n
+      ? [h('b', { key: 0 }, n.id + ' ' + n.short), '  ·  requires ', h('span', { key: 1, className: 'up' }, anc.length ? anc.join(' ') : 'nothing'), '  ·  unlocks ', h('span', { key: 2, className: 'down' }, desc.length ? desc.join(' ') : 'the target')]
+      : [h('span', { key: 'd', className: 'desk' }, 'Drag to pan  ·  scroll or pinch to zoom  ·  drag a node to pull the springs  ·  click a node for its quest'), h('span', { key: 'p', className: 'phone' }, 'Tap a node for its quest')]),
+    h('div', { className: 'tools' },
+      h('button', { className: 'btn icon', onClick: () => E().zoomBy(1 / 1.35), 'aria-label': 'Zoom out', title: 'Zoom out' }, Icon('minus')),
+      h('button', { className: 'btn icon', onClick: () => E().zoomBy(1.35), 'aria-label': 'Zoom in', title: 'Zoom in' }, Icon('plus')),
+      h('button', { className: 'btn icon', onClick: () => E().fit(), 'aria-label': 'Fit graph to view', title: 'Fit to view' }, Icon('fit')),
+      h('button', { className: 'btn haslabel', onClick: () => E().resettle(), 'aria-label': 'Replay the settle animation', title: 'Replay the settle animation' }, Icon('spin'), h('span', { className: 'label' }, 'Re-settle'))));
+}
+
+function QuestBody({ node, status, proof, statusOf, onClose, onVerify, onJump }) {
+  const [url, setUrl] = useState(''), [err, setErr] = useState(''), [tick, setTick] = useState(0), [running, setRunning] = useState(false);
+  const runUrl = useRef(''), n = node.quest.accept.length, total = n + 3;
+  useEffect(() => { if (!running) return; const id = setInterval(() => setTick(t => t + 1), RM ? 80 : 300); return () => clearInterval(id); }, [running]);
+  useEffect(() => { if (running && tick >= total) { setRunning(false); onVerify(node.id, runUrl.current); } }, [tick, running]);
+  const start = u => { runUrl.current = u; setUrl(u); setErr(''); setTick(0); setRunning(true); };
+  const submit = e => {
+    e.preventDefault(); const u = url.trim().replace(/^https?:\/\//, '').replace(/^www\./, '');
+    if (!u) { setErr('Paste the link to your repo first.'); return; }
+    if (!/^(github|gitlab)\.com\/[\w.-]+\/[\w.-]+/.test(u)) { setErr('That is not a repo link. Use the form github.com/you/project.'); return; }
+    start(u);
+  };
+  const locked = status === 'locked', missing = node.deps.filter(p => statusOf(p) !== 'verified');
+  const chip = id => h('button', { key: id, type: 'button', className: 'chip', 'data-s': statusOf(id), 'data-boss': !!GRAPH.byId[id].boss, onClick: () => onJump(id) }, id + ' ' + GRAPH.byId[id].short);
+  const line = (key, k, v, done) => h('div', { key }, h('span', { style: { color: done ? 'var(--green)' : 'var(--cyan)' } }, done ? '✓' : '›'), h('span', { className: 'k' }, k), h('span', { className: 'v' }, v));
+  const label = { locked: 'Locked', active: 'Active', verified: 'Verified' }[status];
+
+  let foot;
+  if (status === 'verified') {
+    const open = node.children.filter(c => statusOf(c) !== 'locked');
+    foot = h('div', { className: 'qp-foot' },
+      h('div', { className: 'eyebrow', style: { color: node.boss ? 'var(--gold)' : 'var(--green)' } }, 'proof of work on record'),
+      h('dl', { className: 'proof' }, h('dt', null, 'artifact'), h('dd', null, proof ? proof.url : ''), h('dt', null, 'proof'), h('dd', null, proof ? proof.hash : ''), h('dt', null, 'verified'), h('dd', null, proof ? proof.at : '')),
+      node.children.length
+        ? h('div', { className: 'chips' }, h('span', { className: 'eyebrow' }, open.length ? 'now playable' : 'feeds'), (open.length ? open : node.children).map(chip))
+        : h('p', { className: 'note' }, 'Target reached. The whole critical path is verified.'));
+  } else if (locked) {
+    foot = h('div', { className: 'qp-foot' },
+      h('div', { className: 'lockmsg' }, Icon('lock', 16), h('span', null, 'This quest stays sealed until ' + (missing.length === 1 ? 'its prerequisite is' : 'all ' + missing.length + ' prerequisites are') + ' verified.')),
+      h('div', { className: 'chips' }, h('span', { className: 'eyebrow' }, 'verify first'), missing.map(chip)));
+  } else if (running) {
+    foot = h('div', { className: 'qp-foot' },
+      h('div', { className: 'eyebrow', style: { color: 'var(--cyan)' } }, 'validating'),
+      h('div', { className: 'vlog', role: 'status' },
+        line('f', 'fetch', runUrl.current + ' @ main', tick >= 1),
+        tick >= 1 ? line('c', 'check', 'acceptance criteria ' + Math.min(n, Math.max(0, tick - 1)) + '/' + n, tick >= n + 1) : null,
+        tick >= n + 1 ? line('h', 'hash', 'artifact ' + fakeHash(node.id + runUrl.current), tick >= n + 2) : null,
+        tick >= n + 2 ? line('s', 'sign', 'proof-of-work record', tick >= n + 3) : null));
+  } else {
+    foot = h('form', { className: 'qp-foot', onSubmit: submit, noValidate: true },
+      h('label', { className: 'eyebrow', htmlFor: 'artifact-url' }, 'submit your artifact'),
+      h('div', { className: 'field' }, h('span', { className: 'prompt', 'aria-hidden': true }, '>'),
+        h('input', { id: 'artifact-url', value: url, onChange: e => { setUrl(e.target.value); setErr(''); }, placeholder: 'github.com/you/' + node.slug, autoComplete: 'off', spellCheck: false })),
+      err ? h('div', { className: 'err', role: 'alert' }, err) : null,
+      h('div', { className: 'actions' },
+        h('button', { className: 'btn primary tall', type: 'submit' }, 'Submit for validation'),
+        h('button', { className: 'btn tall', type: 'button', onClick: () => start('github.com/you/' + node.slug) }, 'Verify demo')),
+      h('p', { className: 'note' }, 'Demo validator: it accepts any well-formed repo link and checks nothing. Nothing leaves this page.'));
+  }
+
+  return [
+    h('div', { className: 'qp-head', key: 'h' },
+      h('div', { className: 'qp-top' },
+        h('span', { className: 'code' }, node.id + '  ·  TIER ' + (node.depth + 1) + '/' + (GRAPH.maxDepth + 1)),
+        h('span', { className: 'pill', 'data-s': status, 'data-boss': !!node.boss }, status === 'verified' ? Icon('check', 11) : locked ? Icon('lock', 11) : null, label),
+        h('button', { className: 'btn icon', onClick: onClose, 'aria-label': 'Close quest panel' }, Icon('close'))),
+      h('h2', null, node.title), h('p', null, node.skill)),
+    h('div', { className: 'qp-body', key: 'b' },
+      h('div', { className: 'quest' },
+        h('div', { className: 'eyebrow' }, node.boss ? h('span', { className: 'boss-tag' }, 'boss fight') : 'quest'),
+        h('div', { className: locked ? 'redact quest' : 'quest', 'aria-hidden': locked }, h('h3', null, node.quest.name), h('p', null, node.quest.brief))),
+      h('div', { className: 'meta' },
+        h('div', null, h('span', { className: 'eyebrow' }, 'effort'), h('b', null, '~' + node.hours + ' h')),
+        h('div', null, h('span', { className: 'eyebrow' }, 'reward'), h('b', null, fmt(node.xp) + ' XP')),
+        h('div', null, h('span', { className: 'eyebrow' }, 'artifact'), h('b', { className: 'art' }, node.quest.artifact))),
+      h('div', null, h('div', { className: 'eyebrow' }, 'acceptance criteria'),
+        h('ul', { className: locked ? 'accept redact' : 'accept', 'aria-hidden': locked }, node.quest.accept.map((a, i) =>
+          h('li', { key: i, 'data-ok': status === 'verified' || (running && tick >= i + 2) }, h('span', { className: 'box' }, Icon('check', 11)), h('span', null, a))))),
+      h('div', { className: 'lineage' },
+        h('span', { className: 'eyebrow' }, 'requires'), h('div', { className: 'chips' }, node.deps.length ? node.deps.map(chip) : h('span', { className: 'chip' }, 'entry point')),
+        h('span', { className: 'eyebrow' }, 'unlocks'), h('div', { className: 'chips' }, node.children.length ? node.children.map(chip) : h('span', { className: 'chip' }, 'the target')))),
+    h(React.Fragment, { key: 'f' }, foot),
+  ];
+}
+
+function QuestPanel(props) {
+  const last = useRef(null); if (props.node) last.current = props.node;
+  const node = last.current, status = node ? props.statusOf(node.id) : 'locked';
+  return h('aside', { className: 'panel glass', 'data-open': props.open, 'data-status': status, 'data-boss': !!(node && node.boss), 'aria-hidden': !props.open, inert: props.open ? undefined : '', 'aria-label': 'Quest detail' },
+    node ? h(QuestBody, Object.assign({}, props, { key: node.id, node, status, proof: props.proofs[node.id] })) : null);
+}
+
+function App() {
+  const [st, dispatch] = useReducer(reducer, INIT);
+  const eng = useRef(null), rootRef = useRef(null);
+  const phone = useMedia('(max-width: 719px)'), wide = useMedia('(min-width: 1280px)');
+  const statusOf = useCallback(id => statusFor(st.verified, id), [st.verified]);
+  const open = !!st.selected && st.phase === 'matrix';
+
+  useEffect(() => { eng.current.setVerified(st.verified, phone ? 420 : 0); }, [st.verified]);
+  useEffect(() => { eng.current.setHover(st.hover); }, [st.hover]);
+  useEffect(() => {
+    const H = rootRef.current.clientHeight;
+    eng.current.setView(st.selected, phone ? { l: 0, r: 0, t: 62, b: open ? H * 0.74 : 62 } : { l: wide ? 252 : 0, r: open ? 444 : 0, t: 62, b: 62 }, phone && open);
+  }, [st.selected, open, phone, wide]);
+  useEffect(() => { if (st.phase === 'matrix') eng.current.start(); else if (st.phase === 'input') eng.current.stop(); }, [st.phase]);
+  useEffect(() => { const f = e => { if (e.key === 'Escape') dispatch({ type: 'SELECT', id: null }); }; window.addEventListener('keydown', f); return () => window.removeEventListener('keydown', f); }, []);
+
+  const onVerify = (id, url) => dispatch({ type: 'VERIFY', id, close: phone, proof: { url, hash: fakeHash(id + url), at: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC' } });
+  const onSelect = useCallback(id => dispatch({ type: 'SELECT', id }), []);
+  const onHover = useCallback(id => dispatch({ type: 'HOVER', id }), []);
+  const focus = st.hover || st.selected;
+
+  return h('div', { ref: rootRef, 'data-phase': st.phase, style: { position: 'absolute', inset: 0, overflow: 'clip' } },
+    h(MatrixCanvas, { engineRef: eng, onHover, onSelect }),
+    h(TopBar, { target: st.target, verified: st.verified, statusOf, onReset: () => dispatch({ type: 'RESET' }), onNewTarget: () => dispatch({ type: 'NEW_TARGET' }) }),
+    h(NodeIndex, { statusOf, focus, selected: st.selected, onHover, onSelect }),
+    h(StatusBar, { focus, engineRef: eng }),
+    h(QuestPanel, { node: st.selected ? GRAPH.byId[st.selected] : null, open, proofs: st.proofs, statusOf, onClose: () => onSelect(null), onVerify, onJump: onSelect }),
+    h(Terminal, { phase: st.phase, target: st.target, onCompile: t => dispatch({ type: 'COMPILE', target: t }), onReady: () => dispatch({ type: 'READY' }) }));
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+})();
+</script>
+</body>
+</html>
